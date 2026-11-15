@@ -1,0 +1,914 @@
+
+import React, { useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import JSZip from "jszip";
+import {
+  Sparkles, Plus, FolderKanban, Code2, Eye, Download,
+  Copy, Check, Smartphone, Tablet, Monitor, Menu, X,
+  WandSparkles, RefreshCw
+} from "lucide-react";
+import "./style.css";
+
+const examples = [
+  ["🛍️", "Online shop", "Build a responsive online shop with product search, category filters, cart, quantity controls and checkout summary."],
+  ["📚", "Learning app", "Build a multilingual learning platform with courses, lessons, progress tracking, bookmarks and quizzes."],
+  ["📺", "IPTV player", "Build a responsive IPTV playlist player with M3U URL import, channel search, categories, favorites and a video player."],
+  ["📅", "Booking app", "Build an appointment booking app with service selection, date/time slots, customer details and booking confirmation."],
+  ["📊", "Business dashboard", "Build a business dashboard with KPIs, charts, filters, recent activity and responsive navigation."],
+  ["🕌", "Quran app", "Build a Quran learning app with Arabic text, translations, audio controls, bookmarks and language switching."]
+];
+
+const starter = {
+  "index.html": `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>My Amar App</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<h1>Your idea starts here</h1>
+<p>Describe your app to generate a working project.</p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>`,
+  "style.css": `body {
+  font-family: system-ui;
+  margin: 0;
+  padding: 3rem;
+  background: #f5f6fb;
+  color: #182033;
+}
+main {
+  max-width: 760px;
+  margin: 10vh auto;
+  padding: 2rem;
+  background: white;
+  border-radius: 20px;
+  box-shadow: 0 12px 40px #17213a18;
+}
+h1 {
+  font-size: clamp(2rem, 6vw, 4rem);
+}`,
+  "app.js": `console.log("Welcome to your Amar app");`
+};
+
+const STORAGE_KEY = "amar-projects-v2";
+
+function readProjects() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.warn("Could not read saved projects:", error);
+    return [];
+  }
+}
+
+function App() {
+  const [page, setPage] = useState("create");
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState("create");
+  const [files, setFiles] = useState(starter);
+  const [selected, setSelected] = useState("index.html");
+  const [name, setName] = useState("Untitled app");
+  const [summary, setSummary] = useState("");
+  const [setup, setSetup] = useState([]);
+  const [projects, setProjects] = useState(readProjects);
+  const [device, setDevice] = useState("desktop");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [mobile, setMobile] = useState(false);
+
+  const ordered = Object.keys(files).sort((a, b) =>
+    a.localeCompare(b)
+  );
+
+  const activeCode = files[selected] || "";
+
+  const preview = useMemo(() => {
+    let html = files["index.html"] || "";
+    const css =
+      files["style.css"] ||
+      files["src/style.css"] ||
+      "";
+    const js = files["app.js"] || "";
+
+    if (!html) {
+      return "<h2>No index.html was generated</h2>";
+    }
+
+    if (
+      css &&
+      !/<link[^>]+stylesheet/i.test(html)
+    ) {
+      html = html.replace(
+        "</head>",
+        `<style>${css.replace(/<\/style/gi, "")}</style></head>`
+      );
+    }
+
+    if (
+      js &&
+      !/<script[^>]+src=/i.test(html)
+    ) {
+      html = html.replace(
+        "</body>",
+        `<script>${js.replace(/<\/script/gi, "")}</script></body>`
+      );
+    }
+
+    return html;
+  }, [files]);
+
+  // Safely save projects without interrupting generation.
+  function saveProjects(list) {
+    try {
+      const safeList = list.map((project) => ({
+        id: project.id,
+        name: String(project.name || "Amar App"),
+        summary: String(project.summary || ""),
+        files: Object.fromEntries(
+          Object.entries(project.files || {}).filter(
+            ([path, content]) =>
+              typeof path === "string" &&
+              typeof content === "string"
+          )
+        ),
+        setup: Array.isArray(project.setup)
+          ? project.setup.map(String)
+          : [],
+        updated: String(
+          project.updated || new Date().toISOString()
+        )
+      }));
+
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(safeList)
+      );
+
+      setProjects(safeList);
+      return true;
+    } catch (error) {
+      console.error("Project saving error:", error);
+      return false;
+    }
+  }
+
+  async function generate(requestMode = mode) {
+    if (prompt.trim().length < 8) {
+      setError(
+        "Write at least 8 characters describing the app or change."
+      );
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    setNotice("");
+
+    try {
+      // Only send plain text files to the API.
+      const cleanFiles = {};
+
+      if (requestMode === "refine") {
+        for (const [path, content] of Object.entries(files)) {
+          if (
+            typeof path === "string" &&
+            typeof content === "string"
+          ) {
+            cleanFiles[path] = content;
+          }
+        }
+      }
+
+      const payload = {
+        prompt: String(prompt.trim()),
+        mode: requestMode,
+        existingFiles: cleanFiles
+      };
+
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const responseText = await res.text();
+
+      let data;
+
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        throw new Error(
+          "Invalid response from AI server. Check Vercel Function Logs."
+        );
+      }
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error || `Generation failed (${res.status}).`
+        );
+      }
+
+      if (
+        !data ||
+        !Array.isArray(data.files) ||
+        data.files.length === 0
+      ) {
+        throw new Error(
+          "The AI did not return valid project files. Please try again."
+        );
+      }
+
+      const next =
+        requestMode === "refine"
+          ? { ...cleanFiles }
+          : {};
+
+      for (const file of data.files) {
+        if (
+          file &&
+          typeof file.path === "string" &&
+          typeof file.content === "string"
+        ) {
+          next[file.path] = file.content;
+        }
+      }
+
+      if (
+        !next["index.html"] &&
+        !next["src/main.jsx"]
+      ) {
+        throw new Error(
+          "The AI did not return an app entry file."
+        );
+      }
+
+      const projectName = String(
+        data.title || "My Amar app"
+      );
+
+      const projectSummary = String(
+        data.summary || ""
+      );
+
+      const projectSetup = Array.isArray(data.setup)
+        ? data.setup.map(String)
+        : [];
+
+      setFiles(next);
+      setName(projectName);
+      setSummary(projectSummary);
+      setSetup(projectSetup);
+
+      const firstFile = next["index.html"]
+        ? "index.html"
+        : Object.keys(next)[0];
+
+      setSelected(firstFile);
+      setPage("editor");
+
+      setNotice(
+        "Project generated successfully. Review your app and test the preview."
+      );
+
+      // Storage errors must not cancel a successful generation.
+      const savedProject = {
+        id: Date.now(),
+        name: projectName,
+        summary: projectSummary,
+        files: next,
+        setup: projectSetup,
+        updated: new Date().toISOString()
+      };
+
+      const saved = [
+        savedProject,
+        ...projects
+      ].slice(0, 25);
+
+      const savedSuccessfully = saveProjects(saved);
+
+      if (!savedSuccessfully) {
+        setNotice(
+          "App generated successfully, but browser saving failed. Export your ZIP to keep a copy."
+        );
+      }
+
+    } catch (e) {
+      console.error("Amar generation error:", e);
+
+      setError(
+        e?.message ||
+        "Could not contact the AI server. Please try again."
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exportZip() {
+    try {
+      const zip = new JSZip();
+
+      Object.entries(files).forEach(([path, content]) => {
+        if (
+          typeof path === "string" &&
+          typeof content === "string"
+        ) {
+          zip.file(path, content);
+        }
+      });
+
+      zip.file(
+        "README-AMAR.md",
+        `# ${name}
+
+${summary}
+
+Generated with Amar AI App Builder.
+
+Review and test this project before production use.
+
+## Setup notes
+
+${
+  setup.map((item) => "- " + item).join("\n") ||
+  "- No external setup notes were returned."
+}
+`
+      );
+
+      const blob = await zip.generateAsync({
+        type: "blob"
+      });
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download =
+        (name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-|-$/g, "") ||
+          "amar-project") + ".zip";
+
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+      }, 1500);
+
+    } catch (error) {
+      console.error("ZIP export error:", error);
+      setError("Could not export ZIP. Please try again.");
+    }
+  }
+
+  function saveEdit() {
+    const savedProject = {
+      id: Date.now(),
+      name,
+      summary,
+      files,
+      setup,
+      updated: new Date().toISOString()
+    };
+
+    const saved = [
+      savedProject,
+      ...projects
+    ].slice(0, 25);
+
+    if (saveProjects(saved)) {
+      setNotice(
+        "Your edited project is saved in this browser."
+      );
+    } else {
+      setError(
+        "Could not save the project in browser storage. Export ZIP instead."
+      );
+    }
+  }
+
+  function openProject(project) {
+    if (
+      !project ||
+      !project.files ||
+      typeof project.files !== "object"
+    ) {
+      setError("This saved project is invalid.");
+      return;
+    }
+
+    setName(project.name || "My Amar app");
+    setSummary(project.summary || "");
+    setFiles(project.files);
+    setSetup(
+      Array.isArray(project.setup)
+        ? project.setup
+        : []
+    );
+
+    setSelected(
+      Object.keys(project.files)[0] || "index.html"
+    );
+
+    setError("");
+    setNotice("");
+    setPage("editor");
+  }
+
+  function startNewApp() {
+    setPage("create");
+    setMode("create");
+    setPrompt("");
+    setError("");
+    setNotice("");
+    setMobile(false);
+  }
+
+  return (
+    <div className="shell">
+      <aside className={`sidebar ${mobile ? "show" : ""}`}>
+        <div className="brand">
+          <span className="logo">
+            <Sparkles />
+          </span>
+
+          <div>
+            <b>amar</b>
+            <small>AI APP BUILDER</small>
+          </div>
+
+          <button
+            className="mobile-close"
+            onClick={() => setMobile(false)}
+          >
+            <X />
+          </button>
+        </div>
+
+        <button
+          className="primary full"
+          onClick={startNewApp}
+        >
+          <Plus size={17} />
+          Create new app
+        </button>
+
+        <p className="nav-caption">WORKSPACE</p>
+
+        <button
+          className={`nav ${page === "create" ? "active" : ""}`}
+          onClick={() => setPage("create")}
+        >
+          <WandSparkles />
+          Build an app
+        </button>
+
+        <button
+          className={`nav ${page === "projects" ? "active" : ""}`}
+          onClick={() => setPage("projects")}
+        >
+          <FolderKanban />
+          My projects
+          <span className="count">{projects.length}</span>
+        </button>
+
+        <div className="sidebar-foot">
+          <b>Powered by Groq AI</b>
+          <p>
+            Your key stays on the server. Never paste it into
+            frontend code or GitHub.
+          </p>
+          <small>AMAR • CREATE ANYTHING</small>
+        </div>
+      </aside>
+
+      {mobile && (
+        <div
+          className="shade"
+          onClick={() => setMobile(false)}
+        />
+      )}
+
+      <main className="main">
+        <header className="top">
+          <button
+            className="hamb"
+            onClick={() => setMobile(true)}
+          >
+            <Menu />
+          </button>
+
+          <span>
+            Workspace <i>/</i>{" "}
+            <b>
+              {page === "create"
+                ? "Build an app"
+                : page === "projects"
+                ? "My projects"
+                : "Editor"}
+            </b>
+          </span>
+
+          <span className="online">● AI workspace</span>
+        </header>
+
+        {page === "create" ? (
+          <section className="home">
+            <div className="hero">
+              <div className="pill">
+                <Sparkles size={14} />
+                GENERAL-PURPOSE AI APP BUILDER
+              </div>
+
+              <h1>
+                Turn your idea into
+                <br />
+                <em>a working app.</em>
+              </h1>
+
+              <p>
+                Describe any kind of application. Amar can
+                generate the project files, help you refine
+                them, and let you preview and export your work.
+              </p>
+
+              <div className="composer">
+                <div className="compose-head">
+                  <WandSparkles />
+                  <b>What do you want to build?</b>
+                  <span className="model">
+                    Groq AI ·{" "}
+                    {mode === "create"
+                      ? "New project"
+                      : "Refine project"}
+                  </span>
+                </div>
+
+                <textarea
+                  rows="5"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="Describe your app, who will use it, its pages, features, design style, and any integrations it needs..."
+                />
+
+                <div className="compose-foot">
+                  <button
+                    className={`mode ${
+                      mode === "create" ? "chosen" : ""
+                    }`}
+                    onClick={() => setMode("create")}
+                  >
+                    New app
+                  </button>
+
+                  <button
+                    className={`mode ${
+                      mode === "refine" ? "chosen" : ""
+                    }`}
+                    onClick={() => {
+                      setMode("refine");
+                      setPage("editor");
+                    }}
+                  >
+                    Refine current app
+                  </button>
+
+                  <button
+                    className="primary generate"
+                    onClick={() => generate(mode)}
+                    disabled={busy}
+                  >
+                    {busy ? (
+                      <>
+                        <span className="spinner" />
+                        Building...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={16} />
+                        Generate app
+                        <b>→</b>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {error && (
+                <div className="error">{error}</div>
+              )}
+            </div>
+
+            <div className="section-title">
+              <div>
+                <h2>Start with an example</h2>
+                <p>
+                  These are examples only. You can build any
+                  project you imagine.
+                </p>
+              </div>
+            </div>
+
+            <div className="examples">
+              {examples.map(([emoji, title, desc]) => (
+                <button
+                  className="example"
+                  key={title}
+                  onClick={() => {
+                    setPrompt(desc);
+                    setMode("create");
+                    setError("");
+                  }}
+                >
+                  <span>{emoji}</span>
+                  <b>{title}</b>
+                  <p>{desc}</p>
+                  <i>↗</i>
+                </button>
+              ))}
+            </div>
+
+            <div className="three">
+              <div>
+                <Code2 />
+                <b>Full project files</b>
+                <p>
+                  Keep folders and files together when exporting.
+                </p>
+              </div>
+
+              <div>
+                <Eye />
+                <b>Preview & refine</b>
+                <p>
+                  Review the result and request improvements.
+                </p>
+              </div>
+
+              <div>
+                <Download />
+                <b>Export your work</b>
+                <p>
+                  Download a ZIP of the generated source project.
+                </p>
+              </div>
+            </div>
+          </section>
+        ) : page === "projects" ? (
+          <section className="projects">
+            <div className="page-heading">
+              <div>
+                <small>YOUR WORKSPACE</small>
+                <h1>My projects</h1>
+                <p>
+                  Projects saved in this browser on this device.
+                </p>
+              </div>
+
+              <button
+                className="primary"
+                onClick={startNewApp}
+              >
+                <Plus size={16} />
+                New app
+              </button>
+            </div>
+
+            {!projects.length ? (
+              <div className="empty">
+                <FolderKanban />
+                <h3>No saved projects yet</h3>
+                <p>
+                  Generate your first app and it will appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="project-grid">
+                {projects.map((project) => (
+                  <button
+                    className="project-card"
+                    key={project.id}
+                    onClick={() => openProject(project)}
+                  >
+                    <div className="project-art">
+                      <Code2 />
+                    </div>
+
+                    <b>{project.name}</b>
+                    <p>{project.summary}</p>
+
+                    <small>
+                      {Object.keys(project.files || {}).length} files
+                      {" · "}
+                      {new Date(
+                        project.updated
+                      ).toLocaleDateString()}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : (
+          <section className="editor">
+            <div className="editor-top">
+              <div>
+                <button
+                  className="back"
+                  onClick={() => setPage("create")}
+                >
+                  ← Workspace
+                </button>
+                <h2>{name}</h2>
+              </div>
+
+              <div className="editor-buttons">
+                <button
+                  className="secondary"
+                  onClick={saveEdit}
+                >
+                  <Check size={15} />
+                  Save
+                </button>
+
+                <button
+                  className="primary"
+                  onClick={exportZip}
+                >
+                  <Download size={15} />
+                  Export ZIP
+                </button>
+              </div>
+            </div>
+
+            {notice && (
+              <div className="notice">{notice}</div>
+            )}
+
+            {error && (
+              <div className="error">{error}</div>
+            )}
+
+            <div className="workbench">
+              <div className="codebox">
+                <div className="box-title">
+                  PROJECT FILES
+                  <span>{ordered.length} files</span>
+                </div>
+
+                <div className="file-list">
+                  {ordered.map((file) => (
+                    <button
+                      key={file}
+                      className={
+                        selected === file ? "selected" : ""
+                      }
+                      onClick={() => setSelected(file)}
+                    >
+                      <Code2 size={14} />
+                      {file}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="code-title">
+                  <span>{selected}</span>
+
+                  <button
+                    title="Copy file"
+                    onClick={() =>
+                      navigator.clipboard?.writeText(activeCode)
+                    }
+                  >
+                    <Copy size={14} />
+                  </button>
+                </div>
+
+                <textarea
+                  className="code"
+                  spellCheck="false"
+                  value={activeCode}
+                  onChange={(e) =>
+                    setFiles({
+                      ...files,
+                      [selected]: e.target.value
+                    })
+                  }
+                />
+              </div>
+
+              <div className="previewbox">
+                <div className="preview-title">
+                  <span>● LIVE PREVIEW</span>
+
+                  <div className="devices">
+                    <button
+                      className={
+                        device === "desktop" ? "on" : ""
+                      }
+                      onClick={() => setDevice("desktop")}
+                    >
+                      <Monitor />
+                    </button>
+
+                    <button
+                      className={
+                        device === "tablet" ? "on" : ""
+                      }
+                      onClick={() => setDevice("tablet")}
+                    >
+                      <Tablet />
+                    </button>
+
+                    <button
+                      className={
+                        device === "mobile" ? "on" : ""
+                      }
+                      onClick={() => setDevice("mobile")}
+                    >
+                      <Smartphone />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="preview-stage">
+                  <iframe
+                    title="Generated app preview"
+                    sandbox="allow-scripts allow-forms allow-modals"
+                    srcDoc={preview}
+                    className={`frame ${device}`}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {setup.length > 0 && (
+              <div className="setup">
+                <b>External setup required</b>
+                <ul>
+                  {setup.map((item, index) => (
+                    <li key={index}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="refine">
+              <b>Want to improve this app?</b>
+
+              <textarea
+                rows="2"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="Tell Amar what to change, add, or fix..."
+              />
+
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => generate("refine")}
+              >
+                {busy ? (
+                  "Working..."
+                ) : (
+                  <>
+                    <RefreshCw size={15} />
+                    Apply changes
+                  </>
+                )}
+              </button>
+
+              {error && (
+                <div className="error">{error}</div>
+              )}
+            </div>
+          </section>
+        )}
+
+        <footer>
+          © 2026 Amar AI App Builder
+          <span>Build any idea · Own your code</span>
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<App />);
